@@ -2,6 +2,32 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAIResponse } from '@/lib/cohere'
 import { prisma } from '@/lib/prisma'
 
+async function generateConversationSummary(callId: string): Promise<string> {
+  const call = await prisma.call.findUnique({
+    where: { id: callId },
+    include: { conversation: { include: { messages: true } } }
+  })
+
+  if (!call?.conversation) return 'No conversation history available.'
+
+  const messages = call.conversation.messages
+  const conversationText = messages.map(m => `${m.role}: ${m.content}`).join('\n')
+
+  // Simple summary - in production, use AI to summarize
+  return `Conversation summary: ${messages.length} messages exchanged. Key topics: ${conversationText.substring(0, 200)}...`
+}
+
+async function findAvailableCounselor() {
+  // Find an available counselor
+  const counselor = await prisma.user.findFirst({
+    where: {
+      role: 'counselor',
+      status: 'available'
+    }
+  })
+  return counselor
+}
+
 export async function POST(request: NextRequest) {
   console.log('Webhook called')
   try {
@@ -71,7 +97,7 @@ export async function POST(request: NextRequest) {
             data: {
               userId: user.id,
               twilioCallSid: callSid,
-              status: 'ongoing',
+              status: 'ai_handling',
               conversation: { connect: { id: conversation.id } }
             },
             include: { conversation: true }
@@ -79,13 +105,67 @@ export async function POST(request: NextRequest) {
         }
 
         // Get AI response
-        const aiResponse = await getAIResponse(speechResult, call.id)
-        console.log('AI response:', aiResponse)
+        const aiResult = await getAIResponse(speechResult, call.id)
+        console.log('AI response:', aiResult)
 
-        // Continue conversation
+        if (aiResult.needsEscalation) {
+          // Generate conversation summary
+          const summary = await generateConversationSummary(call.id)
+
+          // Find available counselor
+          const counselor = await findAvailableCounselor()
+
+          if (counselor) {
+            // Create escalation record
+            await prisma.escalation.create({
+              data: {
+                callId: call.id,
+                counselorId: counselor.id,
+                notes: `Reason: ${aiResult.escalationReason}\nSummary: ${summary}`
+              }
+            })
+
+            // Update call status and assign counselor
+            await prisma.call.update({
+              where: { id: call.id },
+              data: {
+                status: 'counselor_assigned',
+                assignedCounselorId: counselor.id
+              }
+            })
+
+            // Set counselor status to busy
+            await prisma.user.update({
+              where: { id: counselor.id },
+              data: { status: 'busy' }
+            })
+
+            // Escalation response
+            const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">I understand you need professional help. I'm connecting you with a licensed counselor. Please hold while I transfer your call.</Say>
+  <Dial>${counselor.phone}</Dial>
+  <Say voice="alice">The counselor is unavailable right now. Please call back later or contact emergency services if you're in immediate danger.</Say>
+</Response>`
+            return new NextResponse(xml, {
+              headers: { 'Content-Type': 'text/xml' }
+            })
+          } else {
+            // No counselor available, provide info
+            const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">I understand you need professional help. Our counselors are currently unavailable. Please contact the National Suicide Prevention Lifeline at 988, or visit emergency room if you're in immediate danger.</Say>
+</Response>`
+            return new NextResponse(xml, {
+              headers: { 'Content-Type': 'text/xml' }
+            })
+          }
+        }
+
+        // Continue normal conversation
         const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">${aiResponse.replace(/[<>&'"]/g, '')}</Say>
+  <Say voice="alice">${aiResult.response.replace(/[<>&'"]/g, '')}</Say>
   <Gather input="speech" action="/api/twilio/webhook" method="POST" speechTimeout="3" timeout="10">
     <Say>What would you like to talk about next?</Say>
   </Gather>

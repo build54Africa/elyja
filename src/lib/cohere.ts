@@ -5,13 +5,19 @@ const cohere = new CohereClient({
   token: process.env.COHERE_API_KEY
 })
 
-export async function getAIResponse(input: string, callId: string): Promise<string> {
+export interface AIResponse {
+  response: string;
+  needsEscalation: boolean;
+  escalationReason: string;
+}
+
+export async function getAIResponse(input: string, callId: string): Promise<AIResponse> {
   // Get conversation
   const call = await prisma.call.findUnique({
     where: { id: callId },
     include: { conversation: { include: { messages: true } } }
   })
-  if (!call || !call.conversation) return 'Sorry, there was an error.'
+  if (!call || !call.conversation) return { response: 'Sorry, there was an error.', needsEscalation: false, escalationReason: '' }
 
   const conversation = call.conversation
 
@@ -57,18 +63,30 @@ export async function getAIResponse(input: string, callId: string): Promise<stri
       }
     })
 
-    // Check for crisis
-    if (input.toLowerCase().includes('suicide') || input.toLowerCase().includes('kill myself') || input.toLowerCase().includes('self-harm')) {
-      // TODO: handle crisis
-      return aiResponse + ' Please call emergency services at 911 if you\'re in immediate danger.'
+    // Check for escalation
+    const needsEscalation = input.toLowerCase().includes('suicide') ||
+                           input.toLowerCase().includes('kill myself') ||
+                           input.toLowerCase().includes('self-harm') ||
+                           input.toLowerCase().includes('professional') ||
+                           input.toLowerCase().includes('therapist') ||
+                           input.toLowerCase().includes('counselor') ||
+                           input.toLowerCase().includes('help me professionally')
+
+    let escalationReason = ''
+    if (needsEscalation) {
+      if (input.toLowerCase().includes('suicide') || input.toLowerCase().includes('kill myself') || input.toLowerCase().includes('self-harm')) {
+        escalationReason = 'crisis'
+      } else {
+        escalationReason = 'requested_professional'
+      }
     }
 
-    return aiResponse
+    return { response: aiResponse, needsEscalation, escalationReason }
   } catch (error) {
     console.error('Cohere error:', error)
     if ((error as Error).message === 'AI response timeout') {
-      return 'I\'m taking a bit longer to respond. Please hold on.'
+      return { response: 'I\'m taking a bit longer to respond. Please hold on.', needsEscalation: false, escalationReason: '' }
     }
-    return 'I\'m sorry, I\'m having trouble responding right now. Please try again.'
+    return { response: 'I\'m sorry, I\'m having trouble responding right now. Please try again.', needsEscalation: false, escalationReason: '' }
   }
 }
