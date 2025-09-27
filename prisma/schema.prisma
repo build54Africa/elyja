@@ -1,0 +1,76 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid()) @map("_id")
+  email     String?  @unique
+  phone     String?  @unique
+  name      String?
+  role      String   // 'user' or 'counselor'
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  moodEntries   MoodEntry[]
+  conversations Conversation[]
+  calls         Call[]
+  escalations   Escalation[]
+}
+
+model MoodEntry {
+  id        String   @id @default(cuid()) @map("_id")
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mood      Int      // 1-10
+  note      String?
+  date      DateTime @default(now())
+}
+
+model Conversation {
+  id        String   @id @default(cuid()) @map("_id")
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+  callId    String?  @unique
+  call      Call?    @relation(fields: [callId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Message {
+  id             String       @id @default(cuid()) @map("_id")
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String       // 'user' or 'assistant'
+  content        String
+  timestamp      DateTime     @default(now())
+}
+
+model Call {
+  id             String       @id @default(cuid()) @map("_id")
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  twilioCallSid  String       @unique
+  status         String       // 'ongoing', 'completed', 'escalated'
+  startedAt      DateTime     @default(now())
+  endedAt        DateTime?
+  conversation   Conversation?
+  escalation     Escalation?
+}
+
+model Escalation {
+  id          String   @id @default(cuid()) @map("_id")
+  callId      String   @unique
+  call        Call     @relation(fields: [callId], references: [id], onDelete: Cascade)
+  counselorId String
+  counselor   User     @relation(fields: [counselorId], references: [id])
+  escalatedAt DateTime @default(now())
+  notes       String?
+}
